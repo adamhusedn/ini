@@ -252,3 +252,83 @@ yang ditemukan. Tipe pencocokan (`match_type`):
 - Data berasal dari API publik platform. Harap patuhi Terms of Service situs
   dan gunakan secara wajar — script sudah menyertakan jeda antar-request.
 - Kalau ada event baru, cukup jalankan ulang `list-v2` / `extract-codes`.
+
+
+
+---
+
+## 7. Bot Telegram interaktif (`telegram_bot.py`)
+
+Selain script CLI, ada **bot Telegram** yang bisa kamu ajak chat langsung untuk
+cek tiket, kuota, dan event compliment — plus notifikasi otomatis.
+
+> ⚠️ Bot ini **hanya membaca data publik & mengirim link resmi**. Bot TIDAK
+> melakukan login, pembelian, pembayaran, atau pengisian data. Langkah beli
+> tetap kamu lakukan sendiri lewat tombol yang membuka halaman resmi.
+
+### Perintah bot
+
+| Perintah | Fungsi |
+|----------|--------|
+| `/start` atau `/help` | Bantuan |
+| `/list` | Daftar semua event (termasuk hidden), dengan link |
+| `/cek <slug>` | Detail tiket + harga + status + tombol "Buka halaman beli" |
+| `/kuota <slug>` | Kuota total tiap tiket + status |
+| `/compliment` | Semua event gratis/compliment + code undangan |
+| `/cari <kata>` | Cari event berdasar nama/slug |
+| `/watch on` \| `off` \| `status` | Notifikasi otomatis event/code/sold-out baru |
+
+Contoh: `/cek indo-comic`, `/kuota indo-comic`, `/cari persija`
+
+### Setup bot
+
+1. **Pastikan token bot sudah di-set** (sama seperti untuk `watch`):
+   ```cmd
+   setx TELEGRAM_BOT_TOKEN "token-dari-BotFather"
+   ```
+   (buka cmd baru setelah `setx`)
+
+2. **Install dependency:**
+   ```cmd
+   pip install -r requirements.txt
+   ```
+
+3. **Jalankan bot:**
+   ```cmd
+   python telegram_bot.py
+   ```
+   Selama jendela ini terbuka, bot aktif. Chat ke bot kamu di Telegram lalu
+   ketik `/start`.
+
+### Notifikasi otomatis
+
+Kirim `/watch on` ke bot → kamu akan otomatis diberi tahu (tiap ~15 menit) saat:
+- 🆕 ada **event baru** (termasuk hidden Compliment/Private Link)
+- 🎟️ ada **code compliment baru**
+- 🔴 tiket berubah jadi **SOLD_OUT** / 🟢 tiket **dibuka (ACTIVE)**
+
+### Jalan terus di RDP (Task Scheduler)
+
+Agar bot tetap hidup walau kamu logout dari RDP:
+1. Task Scheduler → **Create Task**
+2. General → centang **"Run whether user is logged on or not"**
+3. Triggers → **At startup** (dan/atau **At log on**)
+4. Actions → Start a program:
+   - Program: `python`
+   - Arguments: `telegram_bot.py`
+   - Start in: `C:\Users\Administrator\ini`
+5. OK
+
+> Bot memakai polling (tidak perlu domain/hosting). Cukup token dari BotFather.
+
+---
+
+## File di repo
+
+| File | Isi |
+|------|-----|
+| `scrape_halofans.py` | CLI scraper (search, v2, extract-codes, quota, watch, export-excel, ...) |
+| `halofans_core.py` | Modul inti (fetch/parse) yang dipakai bot |
+| `telegram_bot.py` | Bot Telegram interaktif + notifikasi |
+| `requirements.txt` | Dependency |
+| `README.md` | Panduan ini |
