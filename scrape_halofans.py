@@ -470,29 +470,61 @@ def cmd_crawl(args):
 # =========================================================================== #
 # WATCH — detect new events / new compliment codes since last run
 # =========================================================================== #
-def collect_v2_snapshot(sess):
-    """Return a dict snapshot of all v2 events keyed by id, incl. code info."""
-    listing = list_all_v2_events(sess)
+def _snapshot_entry(ev):
+    """Build one snapshot entry from a moflip_event detail object."""
+    slug = ev.get("slug")
+    inv = extract_invitation(ev)
+    tickets = ev.get("moflip_tickets", [])
+    all_free = bool(tickets) and all((t.get("price") == 0) for t in tickets)
+    return {
+        "id": ev.get("id"),
+        "slug": slug,
+        "name": ev.get("name"),
+        "status": ev.get("status"),
+        "is_test": is_test_event(ev.get("name")),
+        "all_tickets_free": all_free,
+        "codes": (inv or {}).get("valid_values"),
+        "code_field": (inv or {}).get("field"),
+        "url": f"{SITE_BASE}/event/v2/{slug}" if slug else None,
+    }
+
+
+def collect_v2_snapshot(sess, scan_from=None, scan_to=None, scan_pad=15):
+    """Return a dict snapshot of v2 events keyed by id, incl. code info.
+
+    - Always includes events from the public listing.
+    - If scan_from/scan_to given (or scan_pad>0), ALSO scans that id range to
+      catch HIDDEN events (Compliment / Private Link) that are not listed.
+    """
     snap = {}
+
+    # 1) public listing
+    listing = list_all_v2_events(sess)
+    listed_ids = [e["id"] for e in listing if isinstance(e.get("id"), int)]
     for e in listing:
         detail = _get_json(sess, f"{SPL_BASE}/events/{e['id']}")
-        time.sleep(0.15)
+        time.sleep(0.12)
         ev = (detail or {}).get("data", {}).get("moflip_event", {})
-        slug = ev.get("slug")
-        inv = extract_invitation(ev)
-        tickets = ev.get("moflip_tickets", [])
-        all_free = bool(tickets) and all((t.get("price") == 0) for t in tickets)
-        snap[str(e["id"])] = {
-            "id": e["id"],
-            "slug": slug,
-            "name": ev.get("name") or e.get("name"),
-            "status": ev.get("status") or e.get("status"),
-            "is_test": is_test_event(ev.get("name") or e.get("name")),
-            "all_tickets_free": all_free,
-            "codes": (inv or {}).get("valid_values"),
-            "code_field": (inv or {}).get("field"),
-            "url": f"{SITE_BASE}/event/v2/{slug}" if slug else None,
-        }
+        if ev:
+            snap[str(e["id"])] = _snapshot_entry(ev)
+
+    # 2) id-range scan for hidden events
+    if scan_from is None and listed_ids and scan_pad:
+        # auto range: from a bit below the min listed id to a bit above the max
+        scan_from = min(listed_ids) - scan_pad
+        scan_to = max(listed_ids) + scan_pad
+    if scan_from is not None and scan_to is not None:
+        scan_from = max(1, int(scan_from))
+        scan_to = int(scan_to)
+        print(f"  scanning id range {scan_from}..{scan_to} for hidden events ...")
+        for i in range(scan_from, scan_to + 1):
+            if str(i) in snap:
+                continue
+            detail = _get_json(sess, f"{SPL_BASE}/events/{i}")
+            time.sleep(0.05)
+            ev = (detail or {}).get("data", {}).get("moflip_event", {})
+            if ev and ev.get("id"):
+                snap[str(ev["id"])] = _snapshot_entry(ev)
     return snap
 
 
@@ -582,7 +614,9 @@ def cmd_watch(args):
             old = {}
 
     print("Checking spl.moflip.com for changes ...")
-    new = collect_v2_snapshot(sess)
+    scan_pad = 0 if args.no_scan else args.scan_pad
+    new = collect_v2_snapshot(sess, scan_from=args.scan_from,
+                              scan_to=args.scan_to, scan_pad=scan_pad)
 
     include = (lambda r: True) if args.include_test else (lambda r: not r["is_test"])
 
@@ -775,6 +809,15 @@ def main():
                     help="do not send Telegram even if token/chat are configured")
     pw.add_argument("--test-telegram", action="store_true",
                     help="send a test Telegram message and exit")
+    pw.add_argument("--scan-pad", type=int, default=20, dest="scan_pad",
+                    help="also scan this many ids below/above the listing "
+                         "to catch HIDDEN events (Compliment/Private Link). Default 20")
+    pw.add_argument("--scan-from", type=int, default=None, dest="scan_from",
+                    help="scan a specific id range start (use with --scan-to)")
+    pw.add_argument("--scan-to", type=int, default=None, dest="scan_to",
+                    help="scan a specific id range end (use with --scan-from)")
+    pw.add_argument("--no-scan", action="store_true",
+                    help="only use the public listing (skip hidden-event scan)")
     pw.set_defaults(func=cmd_watch)
 
     px = sub.add_parser("export-excel",

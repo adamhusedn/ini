@@ -125,6 +125,30 @@ python3 scrape_halofans.py watch --include-test
 
 Secara default event test/internal (mis. "LOAD TEST", "[Testing]", "-copy-") **diabaikan**.
 
+#### Event tersembunyi (Compliment / Private Link)
+
+Beberapa event **tidak muncul di listing publik** — mis. tiket Compliment, Private
+Link, BRImo, Komunitas. Event ini hanya bisa diakses lewat link langsung, tapi
+ID-nya berurutan, jadi `watch` otomatis **men-scan rentang ID** di sekitar listing
+untuk menemukannya.
+
+```bash
+# default: scan 20 id di bawah & di atas rentang listing
+python3 scrape_halofans.py watch
+
+# perlebar jangkauan scan (mis. 60 id)
+python3 scrape_halofans.py watch --scan-pad 60
+
+# scan rentang ID spesifik
+python3 scrape_halofans.py watch --scan-from 2350 --scan-to 2420
+
+# matikan scan (hanya pakai listing publik — lebih cepat)
+python3 scrape_halofans.py watch --no-scan
+```
+
+> Scan membuat `watch` sedikit lebih lama (beberapa menit) karena mengecek banyak
+> ID. Untuk jadwal otomatis di RDP ini tidak masalah. Kalau mau cepat, pakai `--no-scan`.
+
 ### 📱 Notifikasi ke Telegram (bisa dibuka di HP, link langsung diklik)
 
 Ini cara paling praktis: bot Telegram akan mengirim pesan ke kamu setiap ada
