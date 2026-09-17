@@ -141,12 +141,63 @@ def tickets_of(ev):
     return rows
 
 
+def _parse_dt(s):
+    """Parse an ISO datetime string (e.g. 2026-10-03T05:00:00Z) -> aware dt or None."""
+    if not s:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _now_utc():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
+
+
+def availability(ev):
+    """Return availability flags for an event based on its dates & tickets.
+
+    Keys:
+      event_over     : True kalau event sudah berakhir (event_end < now)
+      not_started    : True kalau event belum mulai (event_start > now)
+      redeemable     : True kalau ada >=1 tiket ACTIVE yang sale_end belum lewat
+      on_sale        : True kalau ada >=1 tiket yang sedang dalam masa jual
+                       (sale_start <= now <= sale_end) apa pun statusnya
+    """
+    now = _now_utc()
+    ev_start = _parse_dt(ev.get("event_start"))
+    ev_end = _parse_dt(ev.get("event_end"))
+    event_over = bool(ev_end and ev_end < now)
+    not_started = bool(ev_start and ev_start > now)
+
+    redeemable = False
+    on_sale = False
+    for t in ev.get("moflip_tickets", []):
+        ss = _parse_dt(t.get("sale_start"))
+        se = _parse_dt(t.get("sale_end"))
+        sale_open = (ss is None or ss <= now) and (se is None or se >= now)
+        if sale_open:
+            on_sale = True
+            if t.get("status") == "ACTIVE":
+                redeemable = True
+    return {
+        "event_over": event_over,
+        "not_started": not_started,
+        "redeemable": redeemable,
+        "on_sale": on_sale,
+    }
+
+
 def summarize(ev):
     """Compact summary of an event."""
     meta = ev.get("meta", {})
     tk = tickets_of(ev)
     all_free = bool(tk) and all(t["price"] == 0 for t in tk)
     inv = invitation_of(ev)
+    avail = availability(ev)
     return {
         "id": ev.get("id"),
         "slug": ev.get("slug"),
@@ -158,6 +209,12 @@ def summarize(ev):
         "all_free": all_free,
         "codes": (inv or {}).get("values"),
         "tickets": tk,
+        "event_start": ev.get("event_start"),
+        "event_end": ev.get("event_end"),
+        "event_over": avail["event_over"],
+        "not_started": avail["not_started"],
+        "redeemable": avail["redeemable"],
+        "on_sale": avail["on_sale"],
         "url": event_page_url(ev.get("slug")) if ev.get("slug") else None,
     }
 

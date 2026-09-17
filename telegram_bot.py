@@ -120,7 +120,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/list</code> — semua event (termasuk hidden)\n"
         "• <code>/cek &lt;slug&gt;</code> — detail tiket + tombol beli\n"
         "• <code>/kuota &lt;slug&gt;</code> — kuota tiap tiket\n"
-        "• <code>/compliment</code> — event gratis + code undangan\n"
+        "• <code>/compliment</code> — event gratis MASIH BERLAKU + code\n"
+        "   (pakai <code>/compliment semua</code> untuk lihat semuanya)\n"
         "• <code>/cari &lt;kata&gt;</code> — cari event\n"
         "• <code>/watch on</code> — notif otomatis event/code/sold-out baru\n\n"
         "Contoh: <code>/cek indo-comic</code>\n\n"
@@ -150,6 +151,13 @@ async def cmd_cek(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(f"📅 {esc(s['date'])}")
     if s["location"]:
         lines.append(f"📍 {esc(s['location'])}")
+    # status keberlakuan
+    if s["event_over"]:
+        lines.append("⛔ <b>Event sudah berakhir</b>")
+    elif s["not_started"]:
+        lines.append("⏳ Event belum mulai" + (" · tiket bisa di-redeem" if s["redeemable"] else ""))
+    elif s["redeemable"]:
+        lines.append("✅ Masih berlaku (tiket bisa dibeli/redeem)")
     if s["codes"]:
         codes = ", ".join(f"<code>{esc(x)}</code>" for x in s["codes"])
         lines.append(f"🎟️ <b>Code undangan:</b> {codes}")
@@ -205,19 +213,39 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_compliment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    # /compliment       -> hanya yang MASIH BERLAKU (default)
+    # /compliment semua -> semua termasuk yang sudah lewat/habis
+    show_all = bool(ctx.args) and ctx.args[0].lower() in ("semua", "all", "-a")
     msg = await update.message.reply_text("⏳ mencari event compliment/gratis ...")
     allev = c.collect_all(_sess, scan_pad=30)
     comp = [s for s in allev.values()
             if (s["all_free"] or s["codes"]) and not s["is_test"]]
+
+    if not show_all:
+        comp = [s for s in comp if not s["event_over"] and s["redeemable"]]
+
     comp.sort(key=lambda x: x["id"], reverse=True)
     if not comp:
-        await msg.edit_text("Tidak ada event compliment/gratis saat ini.")
+        extra = "" if show_all else " yang masih berlaku"
+        await msg.edit_text(f"Tidak ada event compliment/gratis{extra} saat ini.\n"
+                            "Coba <code>/compliment semua</code> untuk melihat semuanya.",
+                            parse_mode=ParseMode.HTML)
         return
-    header = [f"<b>🆓 {len(comp)} event compliment/gratis:</b>\n"]
+
+    judul = "semua compliment/gratis" if show_all else "compliment/gratis MASIH BERLAKU"
+    header = [f"<b>🆓 {len(comp)} event {judul}:</b>"]
+    if not show_all:
+        header.append("<i>(event belum lewat & tiket bisa di-redeem)</i>")
+    header.append("")
     items = []
     for s in comp:
         tag = "🆓GRATIS" if s["all_free"] else "🎟️code"
-        line = f"• <a href=\"{c.event_page_url(s['slug'])}\">{esc(s['name'])[:52]}</a> [{tag}]"
+        when = ""
+        if s["not_started"]:
+            when = " ⏳belum mulai"
+        line = f"• <a href=\"{c.event_page_url(s['slug'])}\">{esc(s['name'])[:50]}</a> [{tag}]{when}"
+        if s["date"]:
+            line += f"\n   📅 {esc(s['date'])}"
         if s["codes"]:
             line += "\n   code: " + ", ".join(f"<code>{esc(x)}</code>" for x in s["codes"])
         line += f"\n   <code>/cek {esc(s['slug'])}</code>"

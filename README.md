@@ -274,11 +274,19 @@ cek tiket, kuota, dan event compliment — plus notifikasi otomatis.
 | `/list` | Daftar semua event (termasuk hidden), dengan link |
 | `/cek <slug>` | Detail tiket + harga + status + tombol "Buka halaman beli" |
 | `/kuota <slug>` | Kuota total tiap tiket + status |
-| `/compliment` | Semua event gratis/compliment + code undangan |
+| `/compliment` | Event gratis/compliment **yang masih berlaku** + code undangan |
+| `/compliment semua` | Semua compliment termasuk yang sudah lewat/habis |
 | `/cari <kata>` | Cari event berdasar nama/slug |
 | `/watch on` \| `off` \| `status` | Notifikasi otomatis event/code/sold-out baru |
 
 Contoh: `/cek indo-comic`, `/kuota indo-comic`, `/cari persija`
+
+**Filter "masih berlaku":** secara default `/compliment` hanya menampilkan event
+yang **belum berakhir** DAN punya tiket yang **masih bisa di-redeem** (status
+ACTIVE, masa jual belum lewat). Ini menyaring compliment lama yang sudah tidak
+berguna. Untuk melihat semuanya (termasuk yang lewat), pakai `/compliment semua`.
+Perintah `/cek <slug>` juga menampilkan status: ✅ masih berlaku / ⏳ belum mulai /
+⛔ sudah berakhir.
 
 ### Setup bot
 
