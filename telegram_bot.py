@@ -78,6 +78,38 @@ def buy_button(slug, label="🎟️ Buka halaman beli"):
     return InlineKeyboardMarkup([[InlineKeyboardButton(label, url=c.event_page_url(slug))]])
 
 
+TG_LIMIT = 3800  # aman di bawah batas Telegram 4096 char
+
+
+def _chunk_lines(lines, limit=TG_LIMIT):
+    """Gabung list baris menjadi beberapa pesan, tiap pesan < limit char."""
+    chunks, buf = [], ""
+    for ln in lines:
+        add = (ln + "\n")
+        if len(buf) + len(add) > limit and buf:
+            chunks.append(buf.rstrip())
+            buf = ""
+        buf += add
+    if buf.strip():
+        chunks.append(buf.rstrip())
+    return chunks or [""]
+
+
+async def send_long(update_or_msg, header_lines, item_lines, edit_first=None):
+    """Kirim header + banyak item, otomatis dipecah bila melebihi batas Telegram.
+
+    - edit_first: message object untuk di-edit sebagai pesan pertama (opsional).
+    """
+    all_chunks = _chunk_lines(header_lines + item_lines)
+    for i, chunk in enumerate(all_chunks):
+        if i == 0 and edit_first is not None:
+            await edit_first.edit_text(chunk, parse_mode=ParseMode.HTML,
+                                       disable_web_page_preview=True)
+        else:
+            await update_or_msg.reply_text(chunk, parse_mode=ParseMode.HTML,
+                                           disable_web_page_preview=True)
+
+
 # --------------------------------------------------------------------------- #
 # Commands
 # --------------------------------------------------------------------------- #
@@ -156,20 +188,20 @@ async def cmd_kuota(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         disable_web_page_preview=True)
 
 
+def _event_line(s):
+    free = " 🆓" if s["all_free"] else ""
+    return (f"• <a href=\"{c.event_page_url(s['slug'])}\">{esc(s['name'])[:55]}</a>{free}\n"
+            f"   <code>/cek {esc(s['slug'])}</code>")
+
+
 async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ mengumpulkan semua event (termasuk hidden) ...")
     allev = c.collect_all(_sess, scan_pad=30)
     real = [s for s in allev.values() if not s["is_test"]]
     real.sort(key=lambda x: x["id"], reverse=True)
-    lines = [f"<b>📋 {len(real)} event</b> (terbaru di atas):\n"]
-    for s in real[:40]:
-        free = " 🆓" if s["all_free"] else ""
-        lines.append(f"• <a href=\"{c.event_page_url(s['slug'])}\">{esc(s['name'])[:55]}</a>{free}\n"
-                     f"   <code>/cek {esc(s['slug'])}</code>")
-    if len(real) > 40:
-        lines.append(f"\n… dan {len(real)-40} lagi. Pakai /cari untuk memfilter.")
-    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=True)
+    header = [f"<b>📋 {len(real)} event</b> (terbaru di atas):\n"]
+    items = [_event_line(s) for s in real]
+    await send_long(update.message, header, items, edit_first=msg)
 
 
 async def cmd_compliment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -181,16 +213,16 @@ async def cmd_compliment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not comp:
         await msg.edit_text("Tidak ada event compliment/gratis saat ini.")
         return
-    lines = [f"<b>🆓 {len(comp)} event compliment/gratis:</b>\n"]
+    header = [f"<b>🆓 {len(comp)} event compliment/gratis:</b>\n"]
+    items = []
     for s in comp:
         tag = "🆓GRATIS" if s["all_free"] else "🎟️code"
-        lines.append(f"• <a href=\"{c.event_page_url(s['slug'])}\">{esc(s['name'])[:52]}</a> [{tag}]")
+        line = f"• <a href=\"{c.event_page_url(s['slug'])}\">{esc(s['name'])[:52]}</a> [{tag}]"
         if s["codes"]:
-            codes = ", ".join(f"<code>{esc(x)}</code>" for x in s["codes"])
-            lines.append(f"   code: {codes}")
-        lines.append(f"   <code>/cek {esc(s['slug'])}</code>")
-    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=True)
+            line += "\n   code: " + ", ".join(f"<code>{esc(x)}</code>" for x in s["codes"])
+        line += f"\n   <code>/cek {esc(s['slug'])}</code>"
+        items.append(line)
+    await send_long(update.message, header, items, edit_first=msg)
 
 
 async def cmd_cari(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -206,13 +238,9 @@ async def cmd_cari(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not hits:
         await msg.edit_text(f"Tidak ada event cocok dengan '{esc(q)}'.")
         return
-    lines = [f"<b>🔎 {len(hits)} hasil untuk '{esc(q)}':</b>\n"]
-    for s in hits[:40]:
-        free = " 🆓" if s["all_free"] else ""
-        lines.append(f"• <a href=\"{c.event_page_url(s['slug'])}\">{esc(s['name'])[:55]}</a>{free}\n"
-                     f"   <code>/cek {esc(s['slug'])}</code>")
-    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=True)
+    header = [f"<b>🔎 {len(hits)} hasil untuk '{esc(q)}':</b>\n"]
+    items = [_event_line(s) for s in hits]
+    await send_long(update.message, header, items, edit_first=msg)
 
 
 # --------------------------------------------------------------------------- #
@@ -288,13 +316,14 @@ async def watch_job(ctx: ContextTypes.DEFAULT_TYPE):
 
     if not events_msgs:
         return
-    text = "<b>🔔 Update Halofans</b>\n\n" + "\n\n".join(events_msgs[:30])
+    chunks = _chunk_lines(["<b>🔔 Update Halofans</b>", ""] + events_msgs)
     for chat_id in subs:
-        try:
-            await ctx.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML,
-                                       disable_web_page_preview=True)
-        except Exception:
-            pass
+        for chunk in chunks:
+            try:
+                await ctx.bot.send_message(chat_id, chunk, parse_mode=ParseMode.HTML,
+                                           disable_web_page_preview=True)
+            except Exception:
+                pass
 
 
 # --------------------------------------------------------------------------- #
