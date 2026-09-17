@@ -476,6 +476,13 @@ def _snapshot_entry(ev):
     inv = extract_invitation(ev)
     tickets = ev.get("moflip_tickets", [])
     all_free = bool(tickets) and all((t.get("price") == 0) for t in tickets)
+    ticket_rows = sorted(
+        ({"id": t.get("id"), "name": t.get("name"), "price": t.get("price"),
+          "availability": t.get("status", "N/A"),
+          "sale_start": t.get("sale_start"), "sale_end": t.get("sale_end")}
+         for t in tickets),
+        key=lambda x: ((x["price"] or 0), x["id"] or 0),
+    )
     return {
         "id": ev.get("id"),
         "slug": slug,
@@ -485,6 +492,9 @@ def _snapshot_entry(ev):
         "all_tickets_free": all_free,
         "codes": (inv or {}).get("valid_values"),
         "code_field": (inv or {}).get("field"),
+        "event_start": ev.get("event_start"),
+        "event_end": ev.get("event_end"),
+        "tickets": ticket_rows,
         "url": f"{SITE_BASE}/event/v2/{slug}" if slug else None,
     }
 
@@ -737,30 +747,26 @@ def cmd_export_excel(args):
 
     sess = session()
     print("Collecting all v2 events for Excel export ...")
-    listing = list_all_v2_events(sess)
-    slugs, base_rows = [], []
-    for e in listing:
-        detail = _get_json(sess, f"{SPL_BASE}/events/{e['id']}")
-        time.sleep(0.15)
-        ev = (detail or {}).get("data", {}).get("moflip_event", {})
-        slug = ev.get("slug")
-        if slug:
-            slugs.append(slug)
-        inv = extract_invitation(ev)
-        tickets = ev.get("moflip_tickets", [])
-        base_rows.append({
-            "id": e["id"], "slug": slug, "name": ev.get("name") or e.get("name"),
-            "status": ev.get("status") or e.get("status"),
-            "is_test": is_test_event(ev.get("name") or e.get("name")),
-            "event_start": e.get("event_start"), "event_end": e.get("event_end"),
-            "all_free": bool(tickets) and all(t.get("price") == 0 for t in tickets),
-            "codes": ", ".join(map(str, (inv or {}).get("valid_values") or [])),
-            "url": f"{SITE_BASE}/event/v2/{slug}" if slug else None,
-        })
+    # Reuse the same snapshot logic as `watch` so HIDDEN events
+    # (Compliment / Private Link) are included too, and it runs in parallel.
+    scan_pad = 0 if args.no_scan else args.scan_pad
+    snap = collect_v2_snapshot(sess, scan_from=args.scan_from,
+                               scan_to=args.scan_to, scan_pad=scan_pad,
+                               workers=args.workers)
 
-    print(f"Fetching ticket detail for {len(slugs)} events ...")
-    summaries = _save_v2_details(sess, slugs)
-    sum_by_slug = {s["slug"]: s for s in summaries}
+    base_rows = []
+    for v in sorted(snap.values(), key=lambda x: x["id"]):
+        base_rows.append({
+            "id": v["id"], "slug": v["slug"], "name": v["name"],
+            "status": v["status"], "is_test": v["is_test"],
+            "event_start": v.get("event_start"), "event_end": v.get("event_end"),
+            "all_free": v["all_tickets_free"],
+            "codes": ", ".join(map(str, v.get("codes") or [])),
+            "url": v["url"],
+            "tickets": v.get("tickets", []),
+        })
+    print(f"Building workbook for {len(base_rows)} events "
+          f"(includes hidden Compliment/Private Link) ...")
 
     wb = Workbook()
     bold = Font(bold=True)
@@ -783,11 +789,8 @@ def cmd_export_excel(args):
     ws2 = wb.create_sheet("Tickets")
     trows = []
     for r in base_rows:
-        s = sum_by_slug.get(r["slug"])
-        if not s:
-            continue
-        for t in s["tickets"]:
-            trows.append([s["id"], s["name"], s["slug"],
+        for t in r["tickets"]:
+            trows.append([r["id"], r["name"], r["slug"],
                           t["name"], t["price"] or 0, t["availability"],
                           t["sale_start"], t["sale_end"]])
     sheet(ws2, ["Event ID", "Event", "Slug", "Ticket", "Price (Rp)",
@@ -865,7 +868,15 @@ def main():
     pw.set_defaults(func=cmd_watch)
 
     px = sub.add_parser("export-excel",
-                        help="export all v2 events/tickets/codes to one .xlsx file")
+                        help="export all v2 events/tickets/codes to one .xlsx file "
+                             "(includes hidden Compliment/Private Link events)")
+    px.add_argument("--scan-pad", type=int, default=30, dest="scan_pad",
+                    help="scan this many ids below/above the listing for hidden events (default 30)")
+    px.add_argument("--scan-from", type=int, default=None, dest="scan_from")
+    px.add_argument("--scan-to", type=int, default=None, dest="scan_to")
+    px.add_argument("--no-scan", action="store_true",
+                    help="only export events from the public listing")
+    px.add_argument("--workers", type=int, default=8, dest="workers")
     px.set_defaults(func=cmd_export_excel)
 
     ps = sub.add_parser("search", help="search legacy events by keyword")
