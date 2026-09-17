@@ -489,42 +489,83 @@ def _snapshot_entry(ev):
     }
 
 
-def collect_v2_snapshot(sess, scan_from=None, scan_to=None, scan_pad=15):
+def _fetch_event_detail(sess, event_id, timeout=12):
+    """Fetch one event detail; return (id, moflip_event dict) or (id, None)."""
+    try:
+        r = sess.get(f"{SPL_BASE}/events/{event_id}", timeout=timeout)
+        if r.status_code == 200:
+            ev = r.json().get("data", {}).get("moflip_event", {})
+            return event_id, (ev or None)
+    except requests.RequestException:
+        pass
+    return event_id, None
+
+
+def _fetch_many(sess, ids, workers=8, timeout=12):
+    """Fetch many event ids in parallel. Returns {id: moflip_event}."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    out = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(_fetch_event_detail, sess, i, timeout) for i in ids]
+        for f in as_completed(futs):
+            eid, ev = f.result()
+            if ev:
+                out[eid] = ev
+    return out
+
+
+def collect_v2_snapshot(sess, scan_from=None, scan_to=None, scan_pad=15, workers=8):
     """Return a dict snapshot of v2 events keyed by id, incl. code info.
 
     - Always includes events from the public listing.
     - If scan_from/scan_to given (or scan_pad>0), ALSO scans that id range to
       catch HIDDEN events (Compliment / Private Link) that are not listed.
+    - Detail requests run in parallel (fast) with a short timeout so a slow /
+      hanging request can't stall the whole run.
     """
     snap = {}
 
-    # 1) public listing
+    # 1) collect all ids to fetch (listing + optional scan range)
     listing = list_all_v2_events(sess)
     listed_ids = [e["id"] for e in listing if isinstance(e.get("id"), int)]
-    for e in listing:
-        detail = _get_json(sess, f"{SPL_BASE}/events/{e['id']}")
-        time.sleep(0.12)
-        ev = (detail or {}).get("data", {}).get("moflip_event", {})
-        if ev:
-            snap[str(e["id"])] = _snapshot_entry(ev)
+    ids = set(listed_ids)
 
-    # 2) id-range scan for hidden events
     if scan_from is None and listed_ids and scan_pad:
-        # auto range: from a bit below the min listed id to a bit above the max
-        scan_from = min(listed_ids) - scan_pad
-        scan_to = max(listed_ids) + scan_pad
+        # Auto range anchored on the LARGEST DENSE cluster of real event ids,
+        # ignoring outliers like the "LOAD TEST" event (id 9999) which would
+        # otherwise send the scan thousands of ids away from real events.
+        s = sorted(set(listed_ids))
+        # split ids into clusters wherever there's a big gap (> 100)
+        clusters, cur = [], [s[0]]
+        for x in s[1:]:
+            if x - cur[-1] <= 100:
+                cur.append(x)
+            else:
+                clusters.append(cur)
+                cur = [x]
+        clusters.append(cur)
+        # pick the cluster containing the most ids (the real events live here)
+        main = max(clusters, key=len)
+        scan_from = min(main) - scan_pad
+        scan_to = max(main) + scan_pad
     if scan_from is not None and scan_to is not None:
         scan_from = max(1, int(scan_from))
         scan_to = int(scan_to)
-        print(f"  scanning id range {scan_from}..{scan_to} for hidden events ...")
-        for i in range(scan_from, scan_to + 1):
-            if str(i) in snap:
-                continue
-            detail = _get_json(sess, f"{SPL_BASE}/events/{i}")
-            time.sleep(0.05)
-            ev = (detail or {}).get("data", {}).get("moflip_event", {})
-            if ev and ev.get("id"):
-                snap[str(ev["id"])] = _snapshot_entry(ev)
+        # hard safety cap so a bad range can never scan thousands of ids
+        span = scan_to - scan_from + 1
+        MAX_SPAN = 300
+        if span > MAX_SPAN:
+            scan_from = scan_to - MAX_SPAN + 1
+            print(f"  (range too wide, capped to last {MAX_SPAN} ids)")
+        print(f"  scanning id range {scan_from}..{scan_to} for hidden events "
+              f"({workers} parallel) ...")
+        ids.update(range(scan_from, scan_to + 1))
+
+    # 2) fetch everything in parallel
+    events = _fetch_many(sess, sorted(ids), workers=workers)
+    for eid, ev in events.items():
+        if ev and ev.get("id"):
+            snap[str(ev["id"])] = _snapshot_entry(ev)
     return snap
 
 
@@ -616,7 +657,8 @@ def cmd_watch(args):
     print("Checking spl.moflip.com for changes ...")
     scan_pad = 0 if args.no_scan else args.scan_pad
     new = collect_v2_snapshot(sess, scan_from=args.scan_from,
-                              scan_to=args.scan_to, scan_pad=scan_pad)
+                              scan_to=args.scan_to, scan_pad=scan_pad,
+                              workers=args.workers)
 
     include = (lambda r: True) if args.include_test else (lambda r: not r["is_test"])
 
@@ -818,6 +860,8 @@ def main():
                     help="scan a specific id range end (use with --scan-from)")
     pw.add_argument("--no-scan", action="store_true",
                     help="only use the public listing (skip hidden-event scan)")
+    pw.add_argument("--workers", type=int, default=8, dest="workers",
+                    help="parallel requests for scanning (default 8, higher=faster)")
     pw.set_defaults(func=cmd_watch)
 
     px = sub.add_parser("export-excel",
