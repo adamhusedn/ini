@@ -35,6 +35,23 @@ def is_test_event(name):
     return any(m in n for m in TEST_MARKERS)
 
 
+def event_category(summary):
+    """Klasifikasi ringan event berdasar nama/slug/harga.
+
+    Return salah satu: 'compliment', 'private', 'regular'.
+    - compliment : semua tiket gratis, atau nama/slug mengandung 'compliment'/'-com'
+    - private    : nama/slug mengandung 'private'/'privat' (Private Link)
+    """
+    name = (summary.get("name") or "").lower()
+    slug = (summary.get("slug") or "").lower()
+    text = name + " " + slug
+    if summary.get("all_free") or "compliment" in text or "-com" in slug:
+        return "compliment"
+    if "private" in text or "privat" in text or "-private" in slug:
+        return "private"
+    return "regular"
+
+
 def session():
     s = requests.Session()
     s.headers.update(HEADERS)

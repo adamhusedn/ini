@@ -123,7 +123,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <code>/compliment</code> — event gratis MASIH BERLAKU + code\n"
         "   (pakai <code>/compliment semua</code> untuk lihat semuanya)\n"
         "• <code>/cari &lt;kata&gt;</code> — cari event\n"
-        "• <code>/watch on</code> — notif otomatis event/code/sold-out baru\n\n"
+        "• <code>/watch compliment</code> — notif hanya compliment/gratis 🆓\n"
+        "• <code>/watch private</code> — notif hanya private link 🔒\n"
+        "• <code>/watch all</code> — notif semua event\n"
+        "• <code>/watch off</code> — matikan notif\n\n"
         "Contoh: <code>/cek indo-comic</code>\n\n"
         "<i>Bot ini hanya menampilkan info & link resmi. Pembelian dilakukan "
         "sendiri lewat tombol.</i>",
@@ -274,40 +277,86 @@ async def cmd_cari(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # --------------------------------------------------------------------------- #
 # Watch / notifications
 # --------------------------------------------------------------------------- #
+WATCH_MODES = {
+    "all": "semua event",
+    "compliment": "hanya compliment/gratis",
+    "private": "hanya private link",
+}
+
+
+def _load_subs():
+    """Subscribers: {str(chat_id): mode}. Migrasi otomatis dari format list lama."""
+    raw = _load(SUBS_PATH, {})
+    if isinstance(raw, list):  # format lama (list chat_id) -> mode 'all'
+        raw = {str(c): "all" for c in raw}
+    return {str(k): v for k, v in raw.items()}
+
+
 async def cmd_watch(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     arg = (ctx.args[0].lower() if ctx.args else "status")
-    subs = set(_load(SUBS_PATH, []))
-    chat_id = update.effective_chat.id
-    if arg == "on":
-        subs.add(chat_id)
-        _save(SUBS_PATH, list(subs))
-        await update.message.reply_text(
-            "✅ Notifikasi ON. Kamu akan diberi tahu saat ada event baru, "
-            "code compliment baru, atau tiket berubah (ACTIVE/SOLD_OUT).")
-    elif arg == "off":
-        subs.discard(chat_id)
-        _save(SUBS_PATH, list(subs))
+    subs = _load_subs()
+    chat_id = str(update.effective_chat.id)
+
+    if arg == "off":
+        subs.pop(chat_id, None)
+        _save(SUBS_PATH, subs)
         await update.message.reply_text("🔕 Notifikasi OFF.")
+        return
+
+    if arg in ("on", "all", "compliment", "private"):
+        mode = "all" if arg == "on" else arg
+        subs[chat_id] = mode
+        _save(SUBS_PATH, subs)
+        await update.message.reply_text(
+            f"✅ Notifikasi ON — <b>{WATCH_MODES[mode]}</b>.\n\n"
+            "Kamu diberi tahu saat ada event/code baru atau tiket berubah "
+            "(ACTIVE/SOLD_OUT) sesuai filter ini.\n\n"
+            "Ganti filter: <code>/watch compliment</code>, "
+            "<code>/watch private</code>, atau <code>/watch all</code>.",
+            parse_mode=ParseMode.HTML)
+        return
+
+    # status
+    if chat_id in subs:
+        await update.message.reply_text(
+            f"Status: ON ✅ — filter <b>{WATCH_MODES.get(subs[chat_id], subs[chat_id])}</b>\n\n"
+            "Pilihan:\n"
+            "• <code>/watch all</code> — semua event\n"
+            "• <code>/watch compliment</code> — hanya compliment/gratis\n"
+            "• <code>/watch private</code> — hanya private link\n"
+            "• <code>/watch off</code> — matikan",
+            parse_mode=ParseMode.HTML)
     else:
-        state = "ON ✅" if chat_id in subs else "OFF 🔕"
-        await update.message.reply_text(f"Status notifikasi kamu: {state}\n"
-                                        "Ubah dengan /watch on atau /watch off")
+        await update.message.reply_text(
+            "Status: OFF 🔕\n\n"
+            "Nyalakan dengan salah satu:\n"
+            "• <code>/watch all</code> — semua event\n"
+            "• <code>/watch compliment</code> — hanya compliment/gratis 🆓\n"
+            "• <code>/watch private</code> — hanya private link 🔒",
+            parse_mode=ParseMode.HTML)
 
 
 def _snapshot(allev):
-    """Kompak: {id: {slug,name,all_free,codes, ticket_status:{tid:status}}}."""
+    """Kompak: {id: {slug,name,all_free,codes,category, ticket_status}}."""
     snap = {}
     for eid, s in allev.items():
         snap[str(eid)] = {
             "slug": s["slug"], "name": s["name"], "all_free": s["all_free"],
-            "codes": s["codes"],
+            "codes": s["codes"], "category": c.event_category(s),
             "ts": {str(t["id"]): t["status"] for t in s["tickets"]},
         }
     return snap
 
 
+def _mode_matches(mode, category):
+    """Apakah event dengan kategori tsb cocok dengan mode subscriber."""
+    if mode == "all":
+        return True
+    return mode == category
+
+
 async def watch_job(ctx: ContextTypes.DEFAULT_TYPE):
-    subs = _load(SUBS_PATH, [])
+    subs = _load_subs()
     if not subs:
         return
     allev = c.collect_all(_sess, scan_pad=30)
@@ -318,9 +367,11 @@ async def watch_job(ctx: ContextTypes.DEFAULT_TYPE):
     if not old_snap:
         return  # baseline pertama
 
-    events_msgs = []
+    # Kumpulkan perubahan sebagai (category, message-line)
+    changes = []
     for eid, cur in new_snap.items():
         prev = old_snap.get(eid)
+        cat = cur.get("category", "regular")
         url = c.event_page_url(cur["slug"])
         link = f"<a href=\"{url}\">{esc(cur['name'])[:55]}</a>"
         if prev is None:
@@ -328,27 +379,32 @@ async def watch_job(ctx: ContextTypes.DEFAULT_TYPE):
             m = f"🆕 Event baru: {link}{free}"
             if cur["codes"]:
                 m += "\n   code: " + ", ".join(f"<code>{esc(x)}</code>" for x in cur["codes"])
-            events_msgs.append(m)
+            changes.append((cat, m))
             continue
         if cur["codes"] and cur["codes"] != prev.get("codes"):
-            events_msgs.append(f"🎟️ Code baru di {link}: " +
-                               ", ".join(f"<code>{esc(x)}</code>" for x in cur["codes"]))
-        # perubahan status tiket
+            changes.append((cat, f"🎟️ Code baru di {link}: " +
+                            ", ".join(f"<code>{esc(x)}</code>" for x in cur["codes"])))
         for tid, st in cur["ts"].items():
             old_st = prev.get("ts", {}).get(tid)
             if old_st and old_st != st:
                 if st == "ACTIVE":
-                    events_msgs.append(f"🟢 Tiket DIBUKA di {link}")
+                    changes.append((cat, f"🟢 Tiket DIBUKA di {link}"))
                 elif st == "SOLD_OUT":
-                    events_msgs.append(f"🔴 Tiket HABIS di {link}")
+                    changes.append((cat, f"🔴 Tiket HABIS di {link}"))
 
-    if not events_msgs:
+    if not changes:
         return
-    chunks = _chunk_lines(["<b>🔔 Update Halofans</b>", ""] + events_msgs)
-    for chat_id in subs:
+
+    # Kirim ke tiap subscriber, disaring sesuai mode-nya
+    for chat_id, mode in subs.items():
+        msgs = [m for cat, m in changes if _mode_matches(mode, cat)]
+        if not msgs:
+            continue
+        tag = {"all": "", "compliment": " (compliment)", "private": " (private link)"}.get(mode, "")
+        chunks = _chunk_lines([f"<b>🔔 Update Halofans{tag}</b>", ""] + msgs)
         for chunk in chunks:
             try:
-                await ctx.bot.send_message(chat_id, chunk, parse_mode=ParseMode.HTML,
+                await ctx.bot.send_message(int(chat_id), chunk, parse_mode=ParseMode.HTML,
                                            disable_web_page_preview=True)
             except Exception:
                 pass
