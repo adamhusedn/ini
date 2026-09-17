@@ -304,6 +304,65 @@ def cmd_v2(args):
         print(f"\nSaved -> {OUT_DIR}/v2_<slug>.json, v2_summary.json, v2_tickets.csv")
 
 
+def fetch_ticket_quota(sess, ticket_id, timeout=12):
+    """Fetch a single ticket's quota via /tickets/{id}. Returns dict or None."""
+    try:
+        r = sess.get(f"{SPL_BASE}/tickets/{ticket_id}", timeout=timeout)
+        if r.status_code == 200:
+            return r.json().get("data", {}).get("moflip_ticket")
+    except requests.RequestException:
+        pass
+    return None
+
+
+def cmd_quota(args):
+    """Show ticket quota + availability for one or more v2 event slugs.
+
+    NOTE: the API exposes each ticket's allocated `quantity` (total quota) and a
+    status (ACTIVE / SOLD_OUT). It does NOT expose how many are still left /
+    already sold, so 'sisa' tidak bisa dihitung persis.
+    """
+    sess = session()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for slug in args.slugs:
+        ev = _get_json(sess, f"{SPL_BASE}/events/{slug}")
+        ev = (ev or {}).get("data", {}).get("moflip_event", {})
+        if not ev:
+            print(f"  ! '{slug}' not found", file=sys.stderr)
+            continue
+        print(f"\n=== {ev.get('name')} (slug={slug}) ===")
+        tickets = sorted(ev.get("moflip_tickets", []),
+                         key=lambda t: (t.get("price") or 0, t.get("id") or 0))
+        total_q = 0
+        for t in tickets:
+            q = fetch_ticket_quota(sess, t["id"])
+            time.sleep(0.05)
+            qty = (q or {}).get("quantity")
+            total_q += qty or 0
+            price = "FREE" if not t.get("price") else f"Rp{t['price']:,}"
+            print(f"   - {t.get('name','')[:40]:40s} {price:>11}  "
+                  f"[{t.get('status','N/A'):8s}]  kuota: {qty}")
+            rows.append({
+                "event": ev.get("name"), "slug": slug,
+                "ticket_id": t["id"], "ticket": t.get("name"),
+                "price": t.get("price"), "status": t.get("status"),
+                "quota_total": qty,
+            })
+        print(f"   Total kuota event ini: {total_q:,}")
+
+    if rows:
+        with (OUT_DIR / "v2_quota.csv").open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["event", "slug", "ticket_id", "ticket",
+                                              "price", "status", "quota_total"])
+            w.writeheader()
+            w.writerows(rows)
+        _write(OUT_DIR / "v2_quota.json", rows)
+        print(f"\nSaved -> {OUT_DIR/'v2_quota.csv'} / .json")
+        print("Catatan: API hanya membocorkan KUOTA TOTAL + status (ACTIVE/SOLD_OUT),\n"
+              "         bukan jumlah tiket yang sudah terjual / sisa real-time.")
+
+
 def cmd_extract_codes(args):
     """Scan every v2 event for invitation / compliment codes."""
     sess = session()
@@ -835,6 +894,11 @@ def main():
     pv = sub.add_parser("v2", help="scrape specific v2 slug events, e.g. indo-comic")
     pv.add_argument("slugs", nargs="+", help="one or more event slugs")
     pv.set_defaults(func=cmd_v2)
+
+    pq = sub.add_parser("quota",
+                        help="show ticket quota + availability for v2 event slug(s)")
+    pq.add_argument("slugs", nargs="+", help="one or more event slugs")
+    pq.set_defaults(func=cmd_quota)
 
     pe = sub.add_parser("extract-codes",
                         help="find invitation/compliment codes across all v2 events")
