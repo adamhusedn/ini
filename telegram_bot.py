@@ -336,6 +336,41 @@ async def cmd_watch(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML)
 
 
+async def cmd_debug(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Diagnosa: status watch, ukuran baseline, jumlah event ter-scan."""
+    msg = await update.message.reply_text("⏳ diagnosa ...")
+    subs = _load_subs()
+    chat_id = str(update.effective_chat.id)
+    allev = c.collect_all(_sess, scan_pad=30)
+    allev = {k: v for k, v in allev.items() if not v["is_test"]}
+    ids = sorted(allev.keys())
+    baseline = _load(STATE_PATH, {})
+    from collections import Counter
+    cats = Counter(v.get("category", c.event_category(v)) if isinstance(v, dict) else "" for v in allev.values())
+    lines = [
+        "<b>🔧 Debug watch</b>",
+        f"• Notif kamu: {'ON ('+subs[chat_id]+')' if chat_id in subs else 'OFF'}",
+        f"• Total subscriber: {len(subs)}",
+        f"• Event ter-scan sekarang: <b>{len(ids)}</b> (id {min(ids)}..{max(ids)})" if ids else "• Event ter-scan: 0",
+        f"• Kategori: compliment={cats.get('compliment',0)}, private={cats.get('private',0)}, regular={cats.get('regular',0)}",
+        f"• Ukuran baseline tersimpan: {len(baseline)}",
+        f"• Interval cek: tiap {WATCH_INTERVAL//60} menit",
+        "",
+        "Jika baseline=0 → belum pernah jalan; notif muncul mulai cek berikutnya.",
+        "Jika event ter-scan &gt; baseline → ada event yang belum tercatat "
+        "(akan dinotif di cek berikutnya kalau cocok filter).",
+    ]
+    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def cmd_testnotif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Paksa jalankan siklus watch sekarang (untuk tes notif)."""
+    await update.message.reply_text("⏳ menjalankan cek watch sekarang ...")
+    await watch_job(ctx)
+    await update.message.reply_text("✅ Selesai. Jika ada perubahan yang cocok "
+                                    "filter kamu, notifnya sudah dikirim di atas.")
+
+
 def _snapshot(allev):
     """Kompak: {id: {slug,name,all_free,codes,category, ticket_status}}."""
     snap = {}
@@ -423,6 +458,8 @@ def main():
     app.add_handler(CommandHandler("compliment", cmd_compliment))
     app.add_handler(CommandHandler("cari", cmd_cari))
     app.add_handler(CommandHandler("watch", cmd_watch))
+    app.add_handler(CommandHandler("debug", cmd_debug))
+    app.add_handler(CommandHandler("testnotif", cmd_testnotif))
     # background job untuk notifikasi
     if app.job_queue:
         app.job_queue.run_repeating(watch_job, interval=WATCH_INTERVAL, first=30)
