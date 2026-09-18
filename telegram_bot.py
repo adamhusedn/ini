@@ -20,6 +20,7 @@ Setup:
   set TELEGRAM_BOT_TOKEN=...        (Windows: setx TELEGRAM_BOT_TOKEN "...")
   python telegram_bot.py
 """
+import asyncio
 import html
 import json
 import os
@@ -51,8 +52,20 @@ _sess = c.session()
 
 
 def scan_all():
-    """Ambil semua event dengan deep scan menyeluruh (dipakai semua perintah)."""
-    return c.collect_all(_sess, deep=True, deep_floor=DEEP_FLOOR, workers=SCAN_WORKERS)
+    """Ambil semua event dengan deep scan menyeluruh (dipakai semua perintah).
+    Pakai session terpisah agar aman dipanggil dari beberapa thread."""
+    return c.collect_all(c.session(), deep=True, deep_floor=DEEP_FLOOR, workers=SCAN_WORKERS)
+
+
+async def scan_all_async(timeout=240):
+    """Jalankan deep scan di thread terpisah supaya bot tidak freeze.
+    Return {} kalau melebihi timeout."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(scan_all), timeout=timeout)
+    except asyncio.TimeoutError:
+        return {}
+    except Exception:
+        return {}
 
 
 # --------------------------------------------------------------------------- #
@@ -219,7 +232,10 @@ def _event_line(s):
 
 async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ mengumpulkan semua event (termasuk hidden) ...")
-    allev = scan_all()
+    allev = await scan_all_async()
+    if not allev:
+        await msg.edit_text('⚠️ Scan gagal/timeout. Server halofans mungkin lambat. Coba lagi sebentar.')
+        return
     real = [s for s in allev.values() if not s["is_test"]]
     real.sort(key=lambda x: x["id"], reverse=True)
     header = [f"<b>📋 {len(real)} event</b> (terbaru di atas):\n"]
@@ -232,7 +248,10 @@ async def cmd_compliment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # /compliment semua -> semua termasuk yang sudah lewat/habis
     show_all = bool(ctx.args) and ctx.args[0].lower() in ("semua", "all", "-a")
     msg = await update.message.reply_text("⏳ mencari event compliment/gratis ...")
-    allev = scan_all()
+    allev = await scan_all_async()
+    if not allev:
+        await msg.edit_text('⚠️ Scan gagal/timeout. Server halofans mungkin lambat. Coba lagi sebentar.')
+        return
     comp = [s for s in allev.values()
             if (s["all_free"] or s["codes"]) and not s["is_test"]]
 
@@ -274,7 +293,10 @@ async def cmd_cari(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     q = " ".join(ctx.args).lower()
     msg = await update.message.reply_text(f"⏳ mencari '{esc(q)}' ...")
-    allev = scan_all()
+    allev = await scan_all_async()
+    if not allev:
+        await msg.edit_text('⚠️ Scan gagal/timeout. Server halofans mungkin lambat. Coba lagi sebentar.')
+        return
     hits = [s for s in allev.values()
             if q in (s["name"] or "").lower() or q in (s["slug"] or "").lower()]
     hits.sort(key=lambda x: x["id"], reverse=True)
@@ -310,7 +332,10 @@ async def cmd_aktif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
         "⏳ deep scan semua event (compliment, private, tiket aktif) ...\n"
         "Ini butuh ~1-2 menit, mohon tunggu.")
-    allev = scan_all()
+    allev = await scan_all_async()
+    if not allev:
+        await msg.edit_text('⚠️ Scan gagal/timeout. Server halofans mungkin lambat. Coba lagi sebentar.')
+        return
     allev = {k: v for k, v in allev.items() if not v["is_test"]}
 
     active = [v for v in allev.values() if _is_active(v)]
@@ -409,7 +434,10 @@ async def cmd_debug(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ diagnosa ...")
     subs = _load_subs()
     chat_id = str(update.effective_chat.id)
-    allev = scan_all()
+    allev = await scan_all_async()
+    if not allev:
+        await msg.edit_text('⚠️ Scan gagal/timeout. Server halofans mungkin lambat. Coba lagi sebentar.')
+        return
     allev = {k: v for k, v in allev.items() if not v["is_test"]}
     ids = sorted(allev.keys())
     baseline = _load(STATE_PATH, {})
@@ -462,7 +490,9 @@ async def watch_job(ctx: ContextTypes.DEFAULT_TYPE):
     subs = _load_subs()
     if not subs:
         return
-    allev = scan_all()
+    allev = await scan_all_async()
+    if not allev:
+        return  # scan gagal/timeout; coba lagi di siklus berikutnya
     allev = {k: v for k, v in allev.items() if not v["is_test"]}
     new_snap = _snapshot(allev)
     old_snap = _load(STATE_PATH, {})

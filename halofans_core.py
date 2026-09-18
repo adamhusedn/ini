@@ -58,7 +58,8 @@ def session():
     return s
 
 
-def _get_json(sess, url, timeout=12):
+def _get_json(sess, url, timeout=(6, 10)):
+    """GET JSON. timeout = (connect, read) supaya request tak pernah menggantung."""
     try:
         r = sess.get(url, timeout=timeout)
         if r.status_code == 200:
