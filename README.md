@@ -271,6 +271,7 @@ cek tiket, kuota, dan event compliment — plus notifikasi otomatis.
 | Perintah | Fungsi |
 |----------|--------|
 | `/start` atau `/help` | Bantuan |
+| `/aktif` | ⭐ Semua yang **masih berlaku**: compliment + private link + tiket dijual (event lewat/mati dibuang) |
 | `/list` | Daftar semua event (termasuk hidden), dengan link |
 | `/cek <slug>` | Detail tiket + harga + status + tombol "Buka halaman beli" |
 | `/kuota <slug>` | Kuota total tiap tiket + status |

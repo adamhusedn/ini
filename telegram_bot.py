@@ -127,6 +127,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "<b>🎫 Bot Tiket Halofans</b>\n\n"
         "Perintah:\n"
+        "• <code>/aktif</code> — ⭐ semua yang MASIH BERLAKU (compliment + "
+        "private + tiket dijual), tanpa event lewat\n"
         "• <code>/list</code> — semua event (termasuk hidden)\n"
         "• <code>/cek &lt;slug&gt;</code> — detail tiket + tombol beli\n"
         "• <code>/kuota &lt;slug&gt;</code> — kuota tiap tiket\n"
@@ -281,6 +283,62 @@ async def cmd_cari(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     header = [f"<b>🔎 {len(hits)} hasil untuk '{esc(q)}':</b>\n"]
     items = [_event_line(s) for s in hits]
+    await send_long(update.message, header, items, edit_first=msg)
+
+
+def _is_active(s):
+    """Event masih relevan: belum berakhir DAN ada tiket yang bisa dibeli/redeem."""
+    return (not s["event_over"]) and (s["redeemable"] or s["on_sale"])
+
+
+def _active_line(s, show_code=True):
+    when = " ⏳belum mulai" if s["not_started"] else ""
+    line = f"• <a href=\"{c.event_page_url(s['slug'])}\">{esc(s['name'])[:55]}</a>{when}"
+    if s["date"]:
+        line += f"\n   📅 {esc(s['date'])}"
+    if show_code and s["codes"]:
+        line += "\n   🎟️ code: " + ", ".join(f"<code>{esc(x)}</code>" for x in s["codes"])
+    line += f"\n   <code>/cek {esc(s['slug'])}</code>"
+    return line
+
+
+async def cmd_aktif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Ringkasan SEMUA yang masih berlaku: compliment, private link, tiket dijual.
+
+    Hasil deep scan; event yang sudah lewat / tiket mati otomatis dibuang.
+    """
+    msg = await update.message.reply_text(
+        "⏳ deep scan semua event (compliment, private, tiket aktif) ...\n"
+        "Ini butuh ~1-2 menit, mohon tunggu.")
+    allev = scan_all()
+    allev = {k: v for k, v in allev.items() if not v["is_test"]}
+
+    active = [v for v in allev.values() if _is_active(v)]
+    comp = [v for v in active if c.event_category(v) == "compliment"]
+    priv = [v for v in active if c.event_category(v) == "private"]
+    reg = [v for v in active if c.event_category(v) == "regular"]
+    for arr in (comp, priv, reg):
+        arr.sort(key=lambda x: x["id"], reverse=True)
+
+    header = [
+        "<b>✅ Event yang MASIH BERLAKU</b>",
+        "<i>(deep scan · event lewat & tiket mati sudah dibuang)</i>",
+        f"🆓 compliment: {len(comp)}  ·  🔒 private: {len(priv)}  ·  🎟️ dijual: {len(reg)}",
+        "",
+    ]
+    items = []
+    if comp:
+        items.append("<b>🆓 COMPLIMENT / GRATIS</b>")
+        items += [_active_line(s) for s in comp]
+        items.append("")
+    if priv:
+        items.append("<b>🔒 PRIVATE LINK</b>")
+        items += [_active_line(s) for s in priv]
+        items.append("")
+    if reg:
+        items.append("<b>🎟️ TIKET DIJUAL (berbayar)</b>")
+        items += [_active_line(s, show_code=False) for s in reg]
+
     await send_long(update.message, header, items, edit_first=msg)
 
 
@@ -467,6 +525,7 @@ def main():
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("compliment", cmd_compliment))
     app.add_handler(CommandHandler("cari", cmd_cari))
+    app.add_handler(CommandHandler("aktif", cmd_aktif))
     app.add_handler(CommandHandler("watch", cmd_watch))
     app.add_handler(CommandHandler("debug", cmd_debug))
     app.add_handler(CommandHandler("testnotif", cmd_testnotif))
