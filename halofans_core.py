@@ -260,23 +260,32 @@ def main_cluster_range(listed_ids, pad=30, max_span=300):
     return lo, hi
 
 
-def collect_all(sess, scan_pad=30, workers=8, include_hidden=True, look_ahead=60):
+def collect_all(sess, scan_pad=30, workers=8, include_hidden=True, look_ahead=60,
+                deep=False, deep_floor=2000, deep_ceiling_pad=60):
     """Return {id: summary} for all events (listing + hidden id-range scan).
 
-    - scan_pad  : lebar scan di sekitar cluster event nyata.
+    - scan_pad  : lebar scan di sekitar cluster event nyata (mode ringan).
     - look_ahead: SELALU scan sekian id DI ATAS id tertinggi (event nyata),
       supaya event hidden baru (yang id-nya melompat ke depan) tetap tertangkap.
+    - deep=True : MODE MENYELURUH. Scan dari deep_floor sampai (id tertinggi
+      + deep_ceiling_pad), menemukan SEMUA compliment/private tersembunyi.
+      Lebih lambat, tapi tidak ada yang terlewat.
     """
     listing = list_events(sess)
     ids = set(e["id"] for e in listing if isinstance(e.get("id"), int))
-    if include_hidden and ids:
+    real = [i for i in ids if i < 900000]
+
+    if deep:
+        # rentang penuh: floor .. (tertinggi + pad)
+        top = max(real) if real else deep_floor
+        ids.update(range(deep_floor, top + deep_ceiling_pad + 1))
+    elif include_hidden and ids:
         lo, hi = main_cluster_range(ids, pad=scan_pad)
         if lo is not None:
             ids.update(range(lo, hi + 1))
-            # look-ahead di atas cluster event nyata (abaikan outlier spt 9999)
-            real = [i for i in ids if i < 900000]
             if real and look_ahead:
                 top = max(real)
                 ids.update(range(top + 1, top + look_ahead + 1))
+
     events = fetch_many(sess, sorted(ids), workers=workers)
     return {eid: summarize(ev) for eid, ev in events.items() if ev.get("id")}

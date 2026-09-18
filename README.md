@@ -281,6 +281,12 @@ cek tiket, kuota, dan event compliment — plus notifikasi otomatis.
 
 Contoh: `/cek indo-comic`, `/kuota indo-comic`, `/cari persija`
 
+**Deep scan menyeluruh:** bot memindai SEMUA id event dari `2000` ke atas
+(bukan hanya di sekitar listing), sehingga tidak ada compliment/private link
+tersembunyi yang terlewat. Ini membuat tiap perintah lebih lama (~1-2 menit)
+tapi lengkap. Batas bawah & jumlah worker bisa diatur lewat env:
+`HALOFANS_DEEP_FLOOR` (default 2000) dan `HALOFANS_WORKERS` (default 25).
+
 **Filter "masih berlaku":** secara default `/compliment` hanya menampilkan event
 yang **belum berakhir** DAN punya tiket yang **masih bisa di-redeem** (status
 ACTIVE, masa jual belum lewat). Ini menyaring compliment lama yang sudah tidak

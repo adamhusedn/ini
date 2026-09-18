@@ -42,7 +42,17 @@ STATE_PATH = Path(__file__).parent / "output" / "bot_watch_state.json"
 SUBS_PATH = Path(__file__).parent / "output" / "bot_subscribers.json"
 WATCH_INTERVAL = 900  # detik (15 menit)
 
+# Deep scan menyeluruh: cek SEMUA id dari DEEP_FLOOR ke atas supaya tidak ada
+# compliment/private link tersembunyi yang terlewat (lebih lambat, tapi lengkap).
+DEEP_FLOOR = int(os.environ.get("HALOFANS_DEEP_FLOOR", "2000"))
+SCAN_WORKERS = int(os.environ.get("HALOFANS_WORKERS", "25"))
+
 _sess = c.session()
+
+
+def scan_all():
+    """Ambil semua event dengan deep scan menyeluruh (dipakai semua perintah)."""
+    return c.collect_all(_sess, deep=True, deep_floor=DEEP_FLOOR, workers=SCAN_WORKERS)
 
 
 # --------------------------------------------------------------------------- #
@@ -207,7 +217,7 @@ def _event_line(s):
 
 async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ mengumpulkan semua event (termasuk hidden) ...")
-    allev = c.collect_all(_sess, scan_pad=30)
+    allev = scan_all()
     real = [s for s in allev.values() if not s["is_test"]]
     real.sort(key=lambda x: x["id"], reverse=True)
     header = [f"<b>📋 {len(real)} event</b> (terbaru di atas):\n"]
@@ -220,7 +230,7 @@ async def cmd_compliment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # /compliment semua -> semua termasuk yang sudah lewat/habis
     show_all = bool(ctx.args) and ctx.args[0].lower() in ("semua", "all", "-a")
     msg = await update.message.reply_text("⏳ mencari event compliment/gratis ...")
-    allev = c.collect_all(_sess, scan_pad=30)
+    allev = scan_all()
     comp = [s for s in allev.values()
             if (s["all_free"] or s["codes"]) and not s["is_test"]]
 
@@ -262,7 +272,7 @@ async def cmd_cari(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     q = " ".join(ctx.args).lower()
     msg = await update.message.reply_text(f"⏳ mencari '{esc(q)}' ...")
-    allev = c.collect_all(_sess, scan_pad=30)
+    allev = scan_all()
     hits = [s for s in allev.values()
             if q in (s["name"] or "").lower() or q in (s["slug"] or "").lower()]
     hits.sort(key=lambda x: x["id"], reverse=True)
@@ -341,7 +351,7 @@ async def cmd_debug(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ diagnosa ...")
     subs = _load_subs()
     chat_id = str(update.effective_chat.id)
-    allev = c.collect_all(_sess, scan_pad=30)
+    allev = scan_all()
     allev = {k: v for k, v in allev.items() if not v["is_test"]}
     ids = sorted(allev.keys())
     baseline = _load(STATE_PATH, {})
@@ -394,7 +404,7 @@ async def watch_job(ctx: ContextTypes.DEFAULT_TYPE):
     subs = _load_subs()
     if not subs:
         return
-    allev = c.collect_all(_sess, scan_pad=30)
+    allev = scan_all()
     allev = {k: v for k, v in allev.items() if not v["is_test"]}
     new_snap = _snapshot(allev)
     old_snap = _load(STATE_PATH, {})
