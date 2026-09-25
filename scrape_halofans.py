@@ -131,28 +131,100 @@ def _write(path, obj):
 # =========================================================================== #
 # v2 / moflip events (the main, current system)
 # =========================================================================== #
-def list_all_v2_events(sess, limit=20, delay=0.2):
-    """Return raw listing objects for every v2 event (walks all pages)."""
-    events, offset = [], 0
-    while True:
-        j = _get_json(sess, f"{SPL_BASE}/events?limit={limit}&offset={offset}")
-        if not j:
-            break
-        data = j.get("data", [])
-        events.extend(data)
-        pag = j.get("meta", {}).get("pagination", {})
-        total = pag.get("total", len(events))
-        if len(events) >= total or not data:
-            break
-        offset += limit
+# Filters known to be accepted by the /events listing endpoint. The endpoint
+# returns HTTP 400 ("At least one filter is required") when called with none,
+# and only surfaces a handful of currently-featured events even when filtered,
+# so it is used as a fast path and backfilled with a ticket-id scan.
+_LISTING_FILTERS = (
+    "category=other", "category=music", "category=sport",
+    "sub_category=highlight", "platform_exclusive=bri",
+    "platform_exclusive=btn", "league=IBL",
+)
+
+
+def _listing_events(sess, limit=50, delay=0.15):
+    """Fast path: pull events from the filtered /events listing endpoint.
+
+    Returns a dict of {event_id: listing_object}. This only covers featured /
+    currently-promoted events, so it is combined with a ticket-id scan for a
+    complete picture (see list_all_v2_events).
+    """
+    found = {}
+    for filt in _LISTING_FILTERS:
+        offset = 0
+        while True:
+            j = _get_json(sess, f"{SPL_BASE}/events?{filt}&limit={limit}&offset={offset}")
+            if not j:
+                break
+            data = j.get("data", []) or []
+            for e in data:
+                if e.get("id") is not None:
+                    found[e["id"]] = e
+            pag = j.get("meta", {}).get("pagination", {})
+            total = pag.get("total", 0)
+            offset += limit
+            if offset >= total or not data:
+                break
+            time.sleep(delay)
         time.sleep(delay)
-    # dedupe by id, preserve order
-    seen, out = set(), []
-    for e in events:
-        if e.get("id") not in seen:
-            seen.add(e.get("id"))
-            out.append(e)
-    return out
+    return found
+
+
+def scan_event_slugs(sess, start_ticket, end_ticket, concurrency_delay=0.02):
+    """Discover event ids + slugs by walking ticket ids.
+
+    /events/{id} is not exposed, but /tickets/{ticket_id} returns both
+    `moflip_event_id` and `event_slug`, which lets us map every event that has
+    at least one ticket in the scanned range. Walks downward from start_ticket
+    to end_ticket (inclusive).
+
+    Returns a dict {event_id: slug}.
+    """
+    mapping = {}
+    step = -1 if start_ticket >= end_ticket else 1
+    for tid in range(start_ticket, end_ticket + step, step):
+        j = _get_json(sess, f"{SPL_BASE}/tickets/{tid}")
+        if not j:
+            continue  # 404 = deleted / non-existent ticket, skip
+        data = j.get("data", {}) or {}
+        ticket = data.get("moflip_ticket", {}) or {}
+        eid = ticket.get("moflip_event_id")
+        slug = data.get("event_slug")
+        if eid and slug:
+            mapping[eid] = slug
+        if concurrency_delay:
+            time.sleep(concurrency_delay)
+    return mapping
+
+
+def list_all_v2_events(sess, limit=20, delay=0.2,
+                       scan_from=13700, scan_to=11800):
+    """Return raw listing objects for every v2 event.
+
+    Combines two sources for completeness:
+      1. the filtered /events listing endpoint (fast, but featured-only), and
+      2. a ticket-id scan that resolves any event with a ticket in
+         [scan_to, scan_from] (covers past/unlisted events too).
+
+    Listing objects from source (1) are richer; events discovered only via the
+    scan are returned as minimal {id, slug} stubs (callers fetch full detail
+    via fetch_v2_event as needed).
+    """
+    # 1. fast path -- featured listing
+    by_id = _listing_events(sess, limit=max(limit, 50), delay=delay)
+
+    # 2. backfill via ticket-id scan
+    print(f"  scanning ticket ids {scan_from}..{scan_to} for unlisted events ...",
+          file=sys.stderr)
+    scanned = scan_event_slugs(sess, scan_from, scan_to)
+    for eid, slug in scanned.items():
+        if eid not in by_id:
+            by_id[eid] = {"id": eid, "slug": slug}
+        elif not by_id[eid].get("slug"):
+            by_id[eid]["slug"] = slug
+
+    # dedupe by id, stable order (ascending id)
+    return [by_id[k] for k in sorted(by_id)]
 
 
 def fetch_v2_event(sess, slug_or_id, delay=0.3):
@@ -248,11 +320,13 @@ def _save_v2_details(sess, slugs):
 def cmd_list_v2(args):
     sess = session()
     print("Listing all v2 events from spl.moflip.com ...\n")
-    listing = list_all_v2_events(sess)
+    listing = list_all_v2_events(sess, scan_from=args.scan_from, scan_to=args.scan_to)
 
     rows = []
     for e in listing:
-        detail = _get_json(sess, f"{SPL_BASE}/events/{e['id']}")
+        # v2 detail is keyed by slug; fall back to id only if slug is missing.
+        ref = e.get("slug") or e.get("id")
+        detail = _get_json(sess, f"{SPL_BASE}/events/{ref}")
         time.sleep(0.15)
         ev = (detail or {}).get("data", {}).get("moflip_event", {})
         slug = ev.get("slug")
@@ -367,10 +441,12 @@ def cmd_extract_codes(args):
     """Scan every v2 event for invitation / compliment codes."""
     sess = session()
     print("Scanning all v2 events for invitation / compliment codes ...\n")
-    listing = list_all_v2_events(sess)
+    listing = list_all_v2_events(sess, scan_from=args.scan_from, scan_to=args.scan_to)
     findings = []
     for e in listing:
-        detail = _get_json(sess, f"{SPL_BASE}/events/{e['id']}")
+        # v2 detail is keyed by slug; fall back to id only if slug is missing.
+        ref = e.get("slug") or e.get("id")
+        detail = _get_json(sess, f"{SPL_BASE}/events/{ref}")
         time.sleep(0.15)
         ev = (detail or {}).get("data", {}).get("moflip_event", {})
         inv = extract_invitation(ev)
@@ -889,6 +965,10 @@ def main():
     pl = sub.add_parser("list-v2", help="list ALL v2 events and resolve every slug")
     pl.add_argument("--details", action="store_true",
                     help="also fetch full detail + tickets for every event")
+    pl.add_argument("--scan-from", type=int, default=13700,
+                    help="highest ticket id to scan when discovering events (default 13700)")
+    pl.add_argument("--scan-to", type=int, default=11800,
+                    help="lowest ticket id to scan when discovering events (default 11800)")
     pl.set_defaults(func=cmd_list_v2)
 
     pv = sub.add_parser("v2", help="scrape specific v2 slug events, e.g. indo-comic")
@@ -902,6 +982,10 @@ def main():
 
     pe = sub.add_parser("extract-codes",
                         help="find invitation/compliment codes across all v2 events")
+    pe.add_argument("--scan-from", type=int, default=13700,
+                    help="highest ticket id to scan when discovering events (default 13700)")
+    pe.add_argument("--scan-to", type=int, default=11800,
+                    help="lowest ticket id to scan when discovering events (default 11800)")
     pe.set_defaults(func=cmd_extract_codes)
 
     pw = sub.add_parser("watch",
